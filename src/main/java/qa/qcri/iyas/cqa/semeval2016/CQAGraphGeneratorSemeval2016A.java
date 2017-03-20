@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import org.apache.log4j.Logger;
 import org.apache.uima.fit.util.JCasUtil;
 import org.apache.uima.jcas.JCas;
 import org.apache.uima.resource.ResourceInitializationException;
@@ -32,16 +33,25 @@ import qa.qcri.iyas.datastructures.cqa.semeval2016.CQAquestion2016;
 import qa.qcri.iyas.datastructures.cqa.semeval2016.CQAquestionThreadList;
 import qa.qcri.iyas.ds.BooleanInvertedIndex;
 import qa.qcri.iyas.textpreprocessing.core.TextPreprocessor;
-import qa.qcri.qf.pipeline.UimaUtil;
-import qa.qcri.qf.trees.nodes.RichNode;
-import qa.qcri.qf.trees.nodes.RichTokenNode;
+import qa.qcri.iyas.utils.Log4jFactory;
+
 import qa.qf.qcri.check.CHK;
 import util.Stopwords;
 
 /**
- * A class for the generation of the KeLP files for Semeval 2016 dataset. The class loads the CQA objects and for
- * each of them extract related representation and store it. 
- * @author sromeo
+ * Contains the necessary methods to build a graph representing a question-comments
+ * thread. 
+ * 
+ * The nodes are the tokens or lemmas (there is a flag in the class) and
+ * and an edge is made between all the comments of c_i and c_{i+1}. In this 
+ * default implementation q is added before c_0 and treated as just another comment.
+ * 
+ * Method mergeNodes merges all those nodes that correspond to a common token,
+ * even if they come from different comments. The resulting graph can be used
+ * to assess the "importance" of different tokens; e.g., on the basis of PageRank
+ * (method runPageRank)
+ *  
+ * @author albarron
  *
  */
 public class CQAGraphGeneratorSemeval2016A {
@@ -66,15 +76,27 @@ public class CQAGraphGeneratorSemeval2016A {
   private final float WEIGHT_DEFAULT = 1;
   
   /** Path to the XML files in which the CQA dataset is stored. */
-  public static final String XML_ROOT_DIR = "/data/alt/corpora/semeval2016/data/v3.2/xml-files/";
+  public static final String XML_ROOT_DIR = 
+              "/data/alt/corpora/semeval2016/data/v3.2/xml-files/";
 
   public static final String STOPWORDS_PATH = "/stoplist-en.txt";
 
   private Map<Integer, List<String>> doc2terms;
 
-  public CQAGraphGeneratorSemeval2016A () throws ResourceInitializationException, IOException {
+  private static Logger logger;
+
+  
+  /**
+   * Initialises the logger, inverted index, text preprocessor, stopwords, and
+   * graph-related resources.
+   * 
+   * @throws ResourceInitializationException
+   * @throws IOException
+   */
+  public CQAGraphGeneratorSemeval2016A () 
+  throws ResourceInitializationException, IOException {
+    logger = Log4jFactory.getLogger();
     invIndex = new BooleanInvertedIndex();
-//    graphGen = new BasicGraphGenerator();
     tp = new TextPreprocessor();
     STOPWORDS = new Stopwords(STOPWORDS_PATH);
     
@@ -86,8 +108,19 @@ public class CQAGraphGeneratorSemeval2016A {
     directedGraph = graphModel.getDirectedGraph();
   }
 
-
-  public  void generateIndex(CQAinstance2016 thread) throws ResourceInitializationException, IOException {
+  /**
+   * Generates an inverted index with all the words from the thread. If USE_LEMMAS
+   * is set to true, lemmas are indexed; tokens otherwise. 
+   * The document identifier for the question becomes "q0" for the comments it's 
+   * "ci" with i being the comment position.
+   *  
+   * @param thread
+   *          a CQA thread in the 2016 format
+   * @throws ResourceInitializationException
+   * @throws IOException
+   */
+  public void generateIndex(CQAinstance2016 thread) 
+  throws ResourceInitializationException, IOException {
     CQAquestion2016 relatedQuestion = thread.getQuestion();
 
     String text= tp.getSemevalNormalizedWholeText(relatedQuestion.getSubject(),
@@ -114,11 +147,14 @@ public class CQAGraphGeneratorSemeval2016A {
       }
       i++;
     }
-    System.out.println(invIndex.size());
+    logger.info("Number of terms in the index: " + invIndex.size());
   }
   
 
   
+  /**
+   * Generates a graph on the basis of a previously-loaded inverted index.
+   */
   public void generateGraph() {
     String[] terms = invIndex.getTerms();
     doc2terms = new TreeMap<Integer, List<String>>();
@@ -144,25 +180,51 @@ public class CQAGraphGeneratorSemeval2016A {
         }
       }
     }
-    
+    logger.info(String.format("Graph dimensions: %d nodes; %d edges", 
+            directedGraph.getNodeCount(), 
+            directedGraph.getEdgeCount()));
   }
 
-  public void addEdge(String id1, String id2, double weight) {
-    Node node1 = directedGraph.getNode(id1);
-    Node node2 = directedGraph.getNode(id2);
+  /**
+   * Add an edge between existing nodes with id id1 and id2. 
+   * @param srcNodeId
+   *          id of the source node (should exist in the graph)
+   * @param trgNodeId
+   *          id of the target node (should exist in the graph)
+   * @param weight
+   *          weight for the edge
+   */
+  public void addEdge(String srcNodeId, String trgNodeId, double weight) {
+    Node node1 = directedGraph.getNode(srcNodeId);
+    Node node2 = directedGraph.getNode(trgNodeId);
     addEdge(node1, node2, weight);
   }
   
-  public void addEdge(Node node1, Node node2, double weight) {
-    Edge e = graphModel.factory().newEdge(node1, node2, 0, weight, true);
+  /**
+   * Add an edge between existing nodes
+   * @param srcNode
+   *          source node (should exist in the graph)
+   * @param trgNode
+   *          target node (should exist in the graph)
+   * @param weight
+   *          weight for the edge
+   */
+  public void addEdge(Node srcNode, Node trgNode, double weight) {
+    Edge e = graphModel.factory().newEdge(srcNode, trgNode, 0, weight, true);
     directedGraph.addEdge(e);
   }
   
+  /**
+   * Adds a new node to the graph with the given id and label. It crashes if
+   * a node exists already with this id?
+   * @param id
+   * @param label
+   */
   public void addNode(String id, String label) {
     Node node = graphModel.factory().newNode(id);
     node.setLabel(id);
-    CHK.CHECK(! directedGraph.contains(node), 
-        "you are adding the same node twice!");
+    CHK.CHECK(directedGraph.getNode(id) == null, 
+        "you are adding the same node twice! " + id);
     directedGraph.addNode(node);
   }
   
@@ -194,15 +256,11 @@ public class CQAGraphGeneratorSemeval2016A {
     pagerank.execute(directedGraph);
     System.out.println(pagerank.getReport());
     Column pageRankColumn = graphModel.getNodeTable().getColumn(PageRank.PAGERANK);
-//    System.out.println(pageRankColumn);
     System.out.println("node\tpagerank\tneighbours");
     for (Node n : directedGraph.getNodes()) {
-//      System.out.println(n.getId() + "\t" + n.getAttribute(pageRankColumn));
       Node[] neighbors = directedGraph.getNeighbors(n).toArray();
       System.out.format("%s\t%s\t%s%n", n.getId(), n.getAttribute(pageRankColumn), neighbors.length);
-      
-//      n.getAttribute(pageRankColumn)
-    }
+   }
     
     
   }
@@ -366,23 +424,8 @@ public class CQAGraphGeneratorSemeval2016A {
         exp.displayPageRank();
         exp.mergeNodes();
         exp.displayPageRank();
-        //  		  bgg.runPageRank();
-
-        //  		  exp.mergeNodesContinuous();
-
-        //      
-        //        CQAquestion2016 relatedQuestion = thread.getQuestion();
-        //        //TODO we temporarily reset this global variable here to start with 
-        //        // the right value when computing the position feature
-        //       
-        //        for (CQAcomment2016 comment : thread.getComments()) {
-        ////          ,args[0]+".klp");
-        //        }
       }
     }
-    //		
-    //		exp.computeGraph(cqaQthreads,fc,tp,args[0]+".klp");
-    //		
   }
 }
 
